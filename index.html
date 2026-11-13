@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
@@ -398,13 +398,14 @@ button{font:inherit;cursor:pointer}
         <label>Телефон<input name="phone" required placeholder="+7 (___) ___-__-__" inputmode="tel"></label>
         <label>Комментарий<textarea name="comment" rows="2" placeholder="Пожелания по комплектации"></textarea></label>
         <label class="check"><input type="checkbox" required> Согласен на обработку персональных данных</label>
+        <input type="checkbox" name="botcheck" tabindex="-1" autocomplete="off" style="display:none">
         <button class="btn primary wide" type="submit">Отправить заявку</button>
       </form>
     </div>
     <div id="okWrap" hidden>
       <div class="ok-ico">✓</div>
-      <h3>Заявка сформирована</h3>
-      <p class="muted">Скачайте коммерческое предложение или отправьте его менеджеру.</p>
+      <h3 id="okTitle">Заявка сформирована</h3>
+      <p class="muted" id="okNote">Скачайте коммерческое предложение или отправьте его менеджеру.</p>
       <button class="btn primary wide" id="okPrint">Скачать КП</button>
       <a class="btn ghost wide" id="okMail" href="#" style="margin-top:10px">Отправить на почту</a>
     </div>
@@ -418,6 +419,12 @@ const DATA = {"series": [{"code": "300", "module": 300, "price": 1750000, "featu
 const CONTACT_PHONE = "+7 (499) 638-24-05";
 const CONTACT_EMAIL = "familycampers@ya.ru";
 const STORE_KEY = "fcampers-config-v1";
+
+/* Отправка заявок на почту через Web3Forms.
+   Ключ доступа выдаётся на web3forms.com для адреса familycampers@ya.ru.
+   Пока ключ пустой — работает запасной вариант (письмо через почтовый клиент). */
+const LEAD_ENDPOINT = "https://api.web3forms.com/submit";
+const LEAD_KEY = "";
 
 const fmt = n => Number(n).toLocaleString("ru-RU") + " ₽";
 const byId = id => document.getElementById(id);
@@ -679,10 +686,57 @@ byId("modalX").addEventListener("click", closeModal);
 byId("modal").addEventListener("click", e => { if (e.target === byId("modal")) closeModal(); });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
-byId("leadForm").addEventListener("submit", e => {
+let leadSending = false;
+byId("leadForm").addEventListener("submit", async e => {
   e.preventDefault();
+  if (leadSending) return;
   const f = e.target;
+  if (f.botcheck && f.botcheck.checked) return; // ловушка для ботов
   state.client = { name: f.name.value.trim(), phone: f.phone.value.trim(), comment: f.comment.value.trim() };
+  save();
+
+  const c = calc();
+  const s = seriesInfo(state.series);
+  const lines = c.items.map(i => `${i.opt.name} — ${i.q} ${i.opt.unit} — ${i.price ? fmt(i.price * i.q) : "по запросу"}`);
+
+  const btn = f.querySelector('button[type="submit"]');
+  const prevLabel = btn.textContent;
+  leadSending = true;
+  btn.disabled = true;
+  btn.textContent = "Отправляем…";
+
+  let sent = false;
+  if (LEAD_KEY) {
+    try {
+      const res = await fetch(LEAD_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          access_key: LEAD_KEY,
+          subject: `Заявка с конфигуратора: серия ${s.code}`,
+          from_name: "Конфигуратор FCampers",
+          name: state.client.name,
+          phone: state.client.phone,
+          comment: state.client.comment || "—",
+          series: `${s.code} (модуль ${s.module} мм)`,
+          options: lines.length ? lines.join("\n") : "—",
+          total: fmt(c.total),
+          page: location.href
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      sent = res.ok && (data.success === true || data.success === "true");
+    } catch (err) { sent = false; }
+  }
+
+  leadSending = false;
+  btn.disabled = false;
+  btn.textContent = prevLabel;
+
+  byId("okTitle").textContent = sent ? "Заявка отправлена" : "Заявка сформирована";
+  byId("okNote").textContent = sent
+    ? "Мы получили заявку и свяжемся в рабочее время. Можно также скачать коммерческое предложение."
+    : "Скачайте коммерческое предложение или отправьте его менеджеру.";
   byId("formWrap").hidden = true;
   byId("okWrap").hidden = false;
   byId("okMail").href = mailtoLink();
