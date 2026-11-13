@@ -397,7 +397,7 @@ button{font:inherit;cursor:pointer}
         <label>Имя<input name="name" required placeholder="Как к вам обращаться"></label>
         <label>Телефон<input name="phone" required placeholder="+7 (___) ___-__-__" inputmode="tel"></label>
         <label>Комментарий<textarea name="comment" rows="2" placeholder="Пожелания по комплектации"></textarea></label>
-        <label class="check"><input type="checkbox" required> Согласен на обработку персональных данных</label>
+        <label class="check"><input type="checkbox" name="consent" required> Я даю <a href="https://familycampers.ru/soglasie/" target="_blank" rel="noopener">согласие на обработку персональных данных</a> и принимаю <a href="https://familycampers.ru/politika_pers_danih/" target="_blank" rel="noopener">политику обработки ПДн</a></label>
         <input type="checkbox" name="botcheck" tabindex="-1" autocomplete="off" style="display:none">
         <button class="btn primary wide" type="submit">Отправить заявку</button>
       </form>
@@ -420,11 +420,11 @@ const CONTACT_PHONE = "+7 (499) 638-24-05";
 const CONTACT_EMAIL = "familycampers@ya.ru";
 const STORE_KEY = "fcampers-config-v1";
 
-/* Отправка заявок на почту через Web3Forms.
-   Ключ доступа выдаётся на web3forms.com для адреса familycampers@ya.ru.
-   Пока ключ пустой — работает запасной вариант (письмо через почтовый клиент). */
-const LEAD_ENDPOINT = "https://api.web3forms.com/submit";
-const LEAD_KEY = "3277b1fb-96ca-4fe7-b3e6-4d1869f70f43";
+/* Отправка заявок в Bitrix24 CRM (российский дата-центр Bitrix24).
+   Вебхук создан с правом только "CRM (crm)". Ключ публичный — от спама защищают
+   honeypot-поле и проверка телефона; при злоупотреблении вебхук можно
+   перегенерировать в Bitrix24 и обновить здесь. */
+const LEAD_ENDPOINT = "https://familycampers.bitrix24.ru/rest/12/brdaq9h353en619p/";
 
 const fmt = n => Number(n).toLocaleString("ru-RU") + " ₽";
 const byId = id => document.getElementById(id);
@@ -706,27 +706,49 @@ byId("leadForm").addEventListener("submit", async e => {
   btn.textContent = "Отправляем…";
 
   let sent = false;
-  if (LEAD_KEY) {
+  const comments = [
+    `Серия: ${s.code} (модуль ${s.module} мм)`,
+    `Базовая цена: ${fmt(c.base)}`,
+    "",
+    "Опции:",
+    ...(lines.length ? lines : ["—"]),
+    "",
+    `Итого: ${fmt(c.total)}`,
+    c.ask ? `Позиций по запросу: ${c.ask}` : "",
+    state.client.comment ? `Комментарий клиента: ${state.client.comment}` : "",
+    `Страница: ${location.href}`,
+  ].filter(Boolean).join("\n");
+
+  const leadPayload = {
+    TITLE: `Заявка с конфигуратора: серия ${s.code}`,
+    NAME: state.client.name,
+    PHONE: [{ VALUE: state.client.phone, VALUE_TYPE: "WORK" }],
+    COMMENTS: comments,
+    SOURCE_DESCRIPTION: "Конфигуратор каравана",
+    STATUS_ID: "NEW",
+  };
+
+  // Bitrix REST: сначала JSON, при CORS-ошибке — form-urlencoded без чтения ответа.
+  try {
+    const res = await fetch(LEAD_ENDPOINT + "crm.lead.add.json", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ fields: leadPayload, params: { REGISTER_SONET_EVENT: "Y" } })
+    });
+    const data = await res.json().catch(() => ({}));
+    sent = res.ok && data && data.result > 0;
+  } catch (err) {
     try {
-      const res = await fetch(LEAD_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({
-          access_key: LEAD_KEY,
-          subject: `Заявка с конфигуратора: серия ${s.code}`,
-          from_name: "Конфигуратор FCampers",
-          name: state.client.name,
-          phone: state.client.phone,
-          comment: state.client.comment || "—",
-          series: `${s.code} (модуль ${s.module} мм)`,
-          options: lines.length ? lines.join("\n") : "—",
-          total: fmt(c.total),
-          page: location.href
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      sent = res.ok && (data.success === true || data.success === "true");
-    } catch (err) { sent = false; }
+      const body = new URLSearchParams();
+      body.append("fields[TITLE]", leadPayload.TITLE);
+      body.append("fields[NAME]", leadPayload.NAME);
+      body.append("fields[PHONE][0][VALUE]", state.client.phone);
+      body.append("fields[PHONE][0][VALUE_TYPE]", "WORK");
+      body.append("fields[COMMENTS]", comments);
+      body.append("fields[SOURCE_DESCRIPTION]", "Конфигуратор каравана");
+      await fetch(LEAD_ENDPOINT + "crm.lead.add.json", { method: "POST", mode: "no-cors", body });
+      sent = true;
+    } catch (err2) { sent = false; }
   }
 
   leadSending = false;
